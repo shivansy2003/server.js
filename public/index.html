@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>AnonChat</title>
+<style>
+:root{--bg:#fff;--fg:#111;--mut:#777;--card:#f1f1f4;--me:#4f46e5;--bd:#ddd}
+@media(prefers-color-scheme:dark){:root{--bg:#0f0f12;--fg:#eee;--mut:#999;--card:#1c1c22;--bd:#2a2a32}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px system-ui,sans-serif;height:100dvh;display:flex;flex-direction:column}
+#home{margin:auto;padding:24px;max-width:380px;text-align:center}
+input,button{font:inherit;padding:12px;border-radius:10px;border:1px solid var(--bd);background:var(--card);color:var(--fg)}
+button{background:var(--me);color:#fff;border:0;cursor:pointer}
+#home input{width:100%;margin:8px 0}
+#chat{display:none;flex-direction:column;height:100%}
+header{padding:10px 14px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center;font-size:14px;color:var(--mut)}
+header button{padding:6px 10px;font-size:13px}
+#log{flex:1;overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:80%;background:var(--card);padding:8px 12px;border-radius:12px;word-wrap:break-word}
+.m.me{align-self:flex-end;background:var(--me);color:#fff}
+.m b{display:block;font-size:12px;opacity:.7}
+.s{text-align:center;color:var(--mut);font-size:13px}
+form{display:flex;gap:8px;padding:10px}
+form input{flex:1}
+</style></head><body>
+<div id="home">
+  <h2>🔐 AnonChat</h2>
+  <p style="color:var(--mut)">End-to-end encrypted. Server tumhare message padh nahi sakta.</p>
+  <input id="code" placeholder="secret code (khaali = random)" autocomplete="off">
+  <button id="join" style="width:100%">Join / Create</button>
+  <p id="err" style="color:#d33;font-size:14px"></p>
+</div>
+<div id="chat">
+  <header><span id="cnt"></span><button id="inv">Invite link copy</button></header>
+  <div id="log"></div>
+  <form id="f"><input id="t" placeholder="Message..." maxlength="500" autocomplete="off"><button>Send</button></form>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $=id=>document.getElementById(id), socket=io();
+const te=new TextEncoder(), td=new TextDecoder();
+const myId=crypto.getRandomValues(new Uint32Array(1))[0].toString(36);
+const nick="anon"+Math.floor(1000+Math.random()*9000);
+let key=null, secret="";
+
+const b64=u=>btoa(String.fromCharCode(...u));
+const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function sha(s){const h=await crypto.subtle.digest("SHA-256",te.encode(s));
+  return [...new Uint8Array(h)].map(b=>b.toString(16).padStart(2,"0")).join("")}
+async function deriveKey(s){
+  const base=await crypto.subtle.importKey("raw",te.encode(s),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt:te.encode("anonchat-v1"),iterations:200000,hash:"SHA-256"},
+    base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"])}
+async function encrypt(obj){
+  const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=new Uint8Array(await crypto.subtle.encrypt({name:"AES-GCM",iv},key,te.encode(JSON.stringify(obj))));
+  const out=new Uint8Array(12+ct.length);out.set(iv);out.set(ct,12);return b64(out)}
+async function decrypt(s){
+  try{const u=unb64(s);
+    const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv:u.slice(0,12)},key,u.slice(12));
+    return JSON.parse(td.decode(pt))}catch{return null}}
+
+function add(cls,nodes){const d=document.createElement("div");d.className=cls;
+  d.append(...nodes);$("log").append(d);$("log").scrollTop=1e9}
+
+async function join(s){
+  if(!crypto.subtle){$("err").textContent="HTTPS chahiye (ya localhost).";return}
+  if(!s){s=[...crypto.getRandomValues(new Uint8Array(12))].map(b=>"abcdefghjkmnpqrstuvwxyz23456789"[b%31]).join("")}
+  if(s.length<8){$("err").textContent="Secret kam se kam 8 characters ka rakho.";return}
+  secret=s;key=await deriveKey(s);
+  socket.emit("join",(await sha("room:"+s)).slice(0,32))}
+
+$("join").onclick=()=>join($("code").value.trim());
+socket.on("joined",()=>{$("home").style.display="none";$("chat").style.display="flex";
+  add("s",["🔐 E2E on. Invite link hi chabi hai, sirf bharose ke logon ko do."])});
+socket.on("count",n=>$("cnt").textContent=n+" online • tum: "+nick);
+socket.on("sys",t=>add("s",[t]));
+socket.on("msg",async blob=>{
+  const m=await decrypt(blob); if(!m)return;
+  const b=document.createElement("b");b.textContent=m.nick;
+  const s=document.createElement("span");s.textContent=m.text;
+  const d=document.createElement("div");
+  add("m"+(m.id===myId?" me":""),[b,s])});
+$("f").onsubmit=async e=>{e.preventDefault();const v=$("t").value.trim();
+  if(v)socket.emit("msg",await encrypt({id:myId,nick,text:v}));$("t").value=""};
+$("inv").onclick=()=>{navigator.clipboard.writeText(location.origin+"/#"+secret);$("inv").textContent="Copied ✓"};
+if(location.hash.length>1){const s=decodeURIComponent(location.hash.slice(1));history.replaceState(null,"",location.pathname);join(s)}
+</script></body></html>
