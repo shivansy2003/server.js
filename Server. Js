@@ -1,0 +1,51 @@
+// Anonymous E2E chat relay. Server sirf encrypted blobs aage bhejta hai.
+// Na database, na logs. Server ko room ka secret ya message ka text kabhi nahi milta.
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { maxHttpBufferSize: 8e3 });
+
+app.disable("x-powered-by");
+app.use((req, res, next) => {
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+app.use(express.static("public"));
+
+const ROOM_RE = /^[a-f0-9]{32}$/;   // client ka SHA-256 hash, asli secret nahi
+const size = (r) => io.sockets.adapter.rooms.get(r)?.size || 0;
+
+io.on("connection", (socket) => {
+  let room = null, last = 0;
+
+  socket.on("join", (id) => {
+    id = String(id || "");
+    if (!ROOM_RE.test(id) || room) return;
+    room = id;
+    socket.join(room);
+    socket.emit("joined");
+    socket.to(room).emit("sys", "Koi aaya");
+    io.to(room).emit("count", size(room));
+  });
+
+  socket.on("msg", (blob) => {
+    if (!room || typeof blob !== "string" || blob.length > 4000) return;
+    const now = Date.now();
+    if (now - last < 400) return;   // spam limit
+    last = now;
+    io.to(room).emit("msg", blob);  // sirf ciphertext
+  });
+
+  socket.on("disconnect", () => {
+    if (!room) return;
+    socket.to(room).emit("sys", "Koi gaya");
+    io.to(room).emit("count", size(room));
+  });
+});
+
+server.listen(process.env.PORT || 3000, () => console.log("Running"));
